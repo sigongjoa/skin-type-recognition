@@ -19,7 +19,7 @@ from pytorch_lightning.callbacks.model_checkpoint import ModelCheckpoint
 
 
 
-save_dir = '2023_09_13_focal_loss'
+save_dir = '2023_09_13_Tversky_loss'
 
 class SkinDataset(Dataset):
     def __init__(self, root_dir, transform=None):
@@ -50,27 +50,34 @@ class SkinDataset(Dataset):
         mask = np.stack(masks, axis=0)
         mask = torch.tensor(mask, dtype=torch.float32)
         return image, mask
-
-
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=1, gamma=2, ignore_index=0, reduction='mean'):
-        super(FocalLoss, self).__init__()
+    
+class TverskyLoss(nn.Module):
+    def __init__(self, alpha=0.7, beta=0.3, smooth=1e-6, ignore_index=0):
+        super(TverskyLoss, self).__init__()
         self.alpha = alpha
-        self.gamma = gamma
+        self.beta = beta
+        self.smooth = smooth
         self.ignore_index = ignore_index
-        self.reduction = reduction
 
     def forward(self, inputs, targets):
-        BCE_loss = F.cross_entropy(inputs, targets, reduction='none', ignore_index=self.ignore_index)
-        pt = torch.exp(-BCE_loss)
-        F_loss = self.alpha * (1-pt)**self.gamma * BCE_loss
+        # Flattening the tensors
+        inputs = inputs.view(-1)
+        targets = targets.view(-1)
 
-        if self.reduction == 'mean':
-            return F_loss.mean()
-        elif self.reduction == 'sum':
-            return F_loss.sum()
-        else:
-            return F_loss
+        # Ignoring the specified index in the targets
+        valid_mask = (targets != self.ignore_index)
+        inputs = inputs[valid_mask]
+        targets = targets[valid_mask]
+
+        # Computing the Tversky index
+        intersection = (inputs * targets).sum()
+        fp = ((1 - targets) * inputs).sum()
+        fn = (targets * (1 - inputs)).sum()
+
+        tversky_index = (intersection + self.smooth) / (intersection + self.alpha * fp + self.beta * fn + self.smooth)
+
+        # Computing the Tversky loss
+        return 1 - tversky_index
 
 
 class LitEfficientNet(pl.LightningModule):
@@ -85,7 +92,7 @@ class LitEfficientNet(pl.LightningModule):
             in_channels=3, 
             classes=3
         )
-        self.criterion = FocalLoss(alpha=1, gamma=2, ignore_index=0)
+        self.criterion = TverskyLoss(alpha=0.7, beta=0.3, ignore_index=0)
         self.train_mean_iou = load_metric("mean_iou")
         self.val_mean_iou = load_metric("mean_iou")
         self.test_mean_iou = load_metric("mean_iou")
